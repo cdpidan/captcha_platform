@@ -2,18 +2,48 @@
 # -*- coding:utf-8 -*-
 # Author: kerlomz <kerlomz@gmail.com>
 import io
+import re
 import cv2
 import time
 import base64
+import functools
 import binascii
 import datetime
 import hashlib
 import numpy as np
-import tensorflow as tf
 from PIL import Image as PIL_Image
 from constants import Response, Config
 from pretreatment import preprocessing
 from config import ModelConfig
+
+
+class Arithmetic(object):
+
+    def calc(self, formula):
+        formula = re.sub(' ', '', formula)
+        formula_ret = 0
+        match_brackets = re.search(r'\([^()]+\)', formula)
+        if match_brackets:
+            calc_result = self.calc(match_brackets.group().strip("(,)"))
+            formula = formula.replace(match_brackets.group(), str(calc_result))
+            return self.calc(formula)
+        else:
+            formula = formula.replace('--', '+').replace('++', '+').replace('-+', '-').replace('+-', '-')
+            while re.findall(r"[*/]", formula):
+                get_formula = re.search(r"[.\d]+[*/]+[-]?[.\d]+", formula)
+                if get_formula:
+                    get_formula_str = get_formula.group()
+                    if get_formula_str.count("*"):
+                        formula_list = get_formula_str.split("*")
+                        ret = float(formula_list[0]) * float(formula_list[1])
+                    else:
+                        formula_list = get_formula_str.split("/")
+                        ret = float(formula_list[0]) / float(formula_list[1])
+                    formula = formula.replace(get_formula_str, str(ret)).replace('--', '+').replace('++', '+')
+            formula = re.findall(r'[-]?[.\d]+', formula)
+            for num in formula:
+                formula_ret += float(num)
+        return formula_ret
 
 
 class ParamUtils(object):
@@ -89,13 +119,21 @@ class ImageUtils(object):
                 background = PIL_Image.new('RGB', pil_image.size, (255, 255, 255))
                 background.paste(pil_image, (0, 0, size[0], size[1]), pil_image)
                 pil_image = background
-            pil_image = pil_image.convert('L')
+
+            if model.image_channel == 1:
+                pil_image = pil_image.convert('L')
 
             # image = cv2.cvtColor(np.asarray(pil_image), cv2.COLOR_RGB2GRAY)
-            image = preprocessing(np.asarray(pil_image), model.binaryzation, model.smooth, model.blur).astype(np.float32)
-            image = cv2.resize(image, (model.resize[0], model.resize[1]))
+            image = preprocessing(np.asarray(pil_image), model.binaryzation, model.smooth, model.blur).astype(
+                np.float32)
+            if model.resize[0] == -1:
+                ratio = model.resize[1] / size[1]
+                resize_width = int(ratio * size[0])
+                image = cv2.resize(image, (resize_width, model.resize[1]))
+            else:
+                image = cv2.resize(image, (model.resize[0], model.resize[1]))
             image = image.swapaxes(0, 1)
-            return image[:, :, np.newaxis] / 255.
+            return (image[:, :, np.newaxis] if model.image_channel == 1 else image[:, :]) / 255.
 
         try:
             image_batch = [load_image(i) for i in bytes_batch]

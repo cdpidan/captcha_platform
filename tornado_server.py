@@ -7,20 +7,24 @@ import optparse
 import threading
 import tornado.ioloop
 import tornado.log
-import tensorflow as tf
+import tornado.gen
+import tornado.httpserver
 from tornado.web import RequestHandler
-from constants import Response, color_map
+from constants import Response
 from json.decoder import JSONDecodeError
 from tornado.escape import json_decode, json_encode
-from interface import InterfaceManager
+from interface import InterfaceManager, Interface
 from config import Config
-from utils import ImageUtils, ParamUtils
+from utils import ImageUtils, ParamUtils, Arithmetic
 from signature import Signature, ServerType
 from watchdog.observers import Observer
 from event_handler import FileEventHandler
+from tornado.concurrent import run_on_executor
+from concurrent.futures import ThreadPoolExecutor
+from middleware import *
 
 sign = Signature(ServerType.TORNADO)
-color_session = tf.Session()
+arithmetic = Arithmetic()
 
 
 class BaseHandler(RequestHandler):
@@ -28,6 +32,7 @@ class BaseHandler(RequestHandler):
     def __init__(self, application, request, **kwargs):
         super().__init__(application, request, **kwargs)
         self.exception = Response()
+        self.executor = ThreadPoolExecutor(workers)
 
     def data_received(self, chunk):
         pass
@@ -54,6 +59,21 @@ class BaseHandler(RequestHandler):
 
 class NoAuthHandler(BaseHandler):
 
+    @run_on_executor
+    def predict(self, interface: Interface, image_batch, split_char, size_string, model_type, model_site, start_time):
+        result = interface.predict_batch(image_batch, split_char)
+        if interface.model_charset == 'ARITHMETIC':
+            if '=' in result or '+' in result or '-' in result or '×' in result or '÷' in result:
+                result = result.replace("×", "*").replace("÷", "/")
+                result = str(int(arithmetic.calc(result)))
+        logger.info('[{} {}] | [{}] - Size[{}] - Type[{}] - Site[{}] - Predict[{}] - {} ms'.format(
+            self.request.remote_ip, self.request.uri, interface.name, size_string, model_type, model_site, result,
+            round((time.time() - start_time) * 1000))
+        )
+
+        return result
+
+    @tornado.gen.coroutine
     def post(self):
         start_time = time.time()
         data = self.parse_param()
@@ -65,7 +85,6 @@ class NoAuthHandler(BaseHandler):
         model_name = ParamUtils.filter(data.get('model_name'))
         split_char = ParamUtils.filter(data.get('split_char'))
         need_color = ParamUtils.filter(data.get('need_color'))
-
         if interface_manager.total == 0:
             logger.info('There is currently no model deployment and services are not available.')
             return self.finish(json_encode({"message": "", "success": False, "code": -999}))
@@ -96,7 +115,7 @@ class NoAuthHandler(BaseHandler):
         split_char = split_char if 'split_char' in data else interface.model_conf.split_char
 
         if need_color:
-            bytes_batch = [interface.separate_color(_, color_map[need_color]) for _ in bytes_batch]
+            bytes_batch = [color_extract.separate_color(_, color_map[need_color]) for _ in bytes_batch]
 
         image_batch, response = ImageUtils.get_image_batch(interface.model_conf, bytes_batch)
 
@@ -106,14 +125,8 @@ class NoAuthHandler(BaseHandler):
                 round((time.time() - start_time) * 1000))
             )
             return self.finish(json_encode(response))
-
-        result = interface.predict_batch(image_batch, split_char)
-        logger.info('[{} {}] | [{}] - Size[{}] - Type[{}] - Site[{}] - Predict[{}] - {} ms'.format(
-            self.request.remote_ip, self.request.uri, interface.name, size_string, model_type, model_site, result,
-            round((time.time() - start_time) * 1000))
-        )
-        response['message'] = result
-        return self.write(json_encode(response))
+        response['message'] = yield self.predict(interface, image_batch, split_char, size_string, model_type, model_site, start_time)
+        return self.finish(json_encode(response))
 
 
 class AuthHandler(NoAuthHandler):
@@ -215,6 +228,7 @@ if __name__ == "__main__":
 
     parser = optparse.OptionParser()
     parser.add_option('-p', '--port', type="int", default=19952, dest="port")
+    parser.add_option('-w', '--workers', type="int", default=50, dest="workers")
     parser.add_option('-c', '--config', type="str", default='./config.yaml', dest="config")
     parser.add_option('-m', '--model_path', type="str", default='model', dest="model_path")
     parser.add_option('-g', '--graph_path', type="str", default='graph', dest="graph_path")
@@ -223,6 +237,7 @@ if __name__ == "__main__":
     conf_path = opt.config
     model_path = opt.model_path
     graph_path = opt.graph_path
+    workers = opt.workers
 
     system_config = Config(conf_path=conf_path, model_path=model_path, graph_path=graph_path)
     logger = system_config.logger
@@ -235,8 +250,11 @@ if __name__ == "__main__":
     server_host = "0.0.0.0"
     logger.info('Running on http://{}:{}/ <Press CTRL + C to quit>'.format(server_host, server_port))
     app = make_app()
-    app.listen(server_port, server_host)
+    http_server = tornado.httpserver.HTTPServer(app)
+    http_server.bind(server_port, server_host)
+    http_server.start(1)
+    # app.listen(server_port, server_host)
     try:
-        tornado.ioloop.IOLoop.current().start()
+        tornado.ioloop.IOLoop.instance().start()
     except KeyboardInterrupt:
-        tornado.ioloop.IOLoop.current().stop()
+        tornado.ioloop.IOLoop.instance().stop()

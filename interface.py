@@ -19,6 +19,7 @@ class Interface(object):
         self.model_type = self.graph_sess.model_type
         self.model_site = self.graph_sess.model_site
         self.version = self.graph_sess.version
+        self.model_charset = self.model_conf.charset
         if self.graph_sess.loaded:
             self.sess = self.graph_sess.session
             self.dense_decoded = self.sess.graph.get_tensor_by_name("dense_decoded:0")
@@ -35,9 +36,6 @@ class Interface(object):
 
     def destroy(self):
         self.graph_sess.destroy()
-
-    def separate_color(self, image_bytes, color):
-        return self.graph_sess.separate_color(image_bytes, color)
 
     def predict_batch(self, image_batch, split_char=None):
         predict_text = predict_func(
