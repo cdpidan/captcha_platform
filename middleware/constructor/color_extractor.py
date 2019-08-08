@@ -93,7 +93,7 @@ def compile_graph():
 
 if __name__ == "__main__":
 
-    sess = tf.Session()
+    sess = tf.compat.v1.Session()
     img_holder = tf.placeholder(dtype=tf.int32, name="img_holder")
     color = tf.placeholder(dtype=tf.int32, name="target_color")
     filtered = filter_img(img_holder, color, alpha=0.8)
